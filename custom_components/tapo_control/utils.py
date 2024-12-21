@@ -12,7 +12,7 @@ import uuid
 
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
-from pytapo.media_stream.downloader import Downloader
+from .media_stream.downloader import Downloader
 from homeassistant.components.media_source.error import Unresolvable
 
 from haffmpeg.tools import IMAGE_JPEG, ImageFrame
@@ -41,6 +41,7 @@ from .const import (
     CONF_CUSTOM_STREAM,
     MEDIA_SYNC_COLD_STORAGE_PATH,
     MEDIA_SYNC_HOURS,
+    ENABLE_MEDIA_SYNC
 )
 
 UUID = uuid.uuid4().hex
@@ -163,11 +164,11 @@ def getHotDirPathForEntry(hass: HomeAssistant, entry_id: str):
     return hotDirPath.rstrip("/")
 
 
-async def getRecordings(hass, entry_id, date):
-    tapoController: Tapo = hass.data[DOMAIN][entry_id]["controller"]
+async def getRecordings(hass,tapoController, entry_id, date):
+    
     LOGGER.debug("Getting recordings for date " + date + "...")
     recordingsForDay = await hass.async_add_executor_job(
-        tapoController.getRecordings, date
+        tapoGetRecordings,tapoController, date
     )
     if recordingsForDay is not None:
         for recording in recordingsForDay:
@@ -191,42 +192,60 @@ async def findMedia(hass, entry):
     entry_id = entry.entry_id
     LOGGER.debug("Finding media...")
     hass.data[DOMAIN][entry_id]["initialMediaScanDone"] = False
-    tapoController: Tapo = hass.data[DOMAIN][entry_id]["controller"]
-
-    recordingsList = await hass.async_add_executor_job(tapoController.getRecordingsList)
-    mediaScanResult = {}
-    for searchResult in recordingsList:
-        for key in searchResult:
-            LOGGER.debug(f"Getting media for day {searchResult[key]['date']}...")
-            recordingsForDay = await getRecordings(
-                hass, entry_id, searchResult[key]["date"]
-            )
-            LOGGER.debug(
-                f"Looping through recordings for day {searchResult[key]['date']}..."
-            )
-            for recording in recordingsForDay:
-                for recordingKey in recording:
-                    filePathVideo = getColdFile(
-                        hass,
-                        entry_id,
-                        recording[recordingKey]["startTime"],
-                        recording[recordingKey]["endTime"],
-                        "videos",
+    LOGGER.debug(f"initialMediaScanDone:findMedia:false")
+    controllers = [
+        child["controller"] for child in hass.data[DOMAIN][entry_id]["childDevices"]
+        ]
+    controllers.append( hass.data[DOMAIN][entry_id]["controller"])
+    try:
+        mediaScanResult = {}
+        for tapoController in controllers:
+            recordingsList = await hass.async_add_executor_job(tapoController.getRecordingsList,"20240621")
+            for searchResult in recordingsList:
+                for key in searchResult:
+                    LOGGER.debug(f"Getting media for day {searchResult[key]['date']}...")
+                    recordingsForDay = await getRecordings(
+                        hass, tapoController, entry_id, searchResult[key]["date"]
                     )
-                    mediaScanResult[
-                        str(recording[recordingKey]["startTime"])
-                        + "-"
-                        + str(recording[recordingKey]["endTime"])
-                    ] = True
-                    if os.path.exists(filePathVideo):
-                        await processDownload(
-                            hass,
-                            entry_id,
-                            recording[recordingKey]["startTime"],
-                            recording[recordingKey]["endTime"],
-                        )
-    hass.data[DOMAIN][entry_id]["mediaScanResult"] = mediaScanResult
-    hass.data[DOMAIN][entry_id]["initialMediaScanDone"] = True
+                    LOGGER.debug(
+                        f"Looping through recordings for day {searchResult[key]['date']}..."
+                    )
+                    for recording in recordingsForDay:
+                        for recordingKey in recording:
+                            filePathVideo = getColdFile(
+                                hass,
+                                entry_id,
+                                recording[recordingKey]["startTime"],
+                                recording[recordingKey]["endTime"],
+                                "videos",
+                            )
+                            mediaScanResult[
+                                str(recording[recordingKey]["startTime"])
+                                + "-"
+                                + str(recording[recordingKey]["endTime"])
+                            ] = True
+                            if os.path.exists(filePathVideo):
+                                await processDownload(
+                                    hass,
+                                    entry_id,
+                                    recording[recordingKey]["startTime"],
+                                    recording[recordingKey]["endTime"],
+                                )
+        hass.data[DOMAIN][entry_id]["mediaScanResult"] = mediaScanResult
+        hass.data[DOMAIN][entry_id]["initialMediaScanDone"] = True
+        LOGGER.debug(f"initialMediaScanDone:findMedia:succes:true")
+    except Exception as err:
+        hass.data[DOMAIN][entry.entry_id]["initialMediaScanDone"] = True
+        LOGGER.debug(f"initialMediaScanDone:findMedia:exception:true")
+        hass.data[DOMAIN][entry.entry_id]["mediaSyncAvailable"] = False
+        enableMediaSync = entry.data.get(ENABLE_MEDIA_SYNC)
+        errMsg = "Disabling media sync as there was error returned from getRecordingsList. Do you have SD card inserted?"
+        if enableMediaSync:
+            LOGGER.warn(errMsg)
+            LOGGER.warn(err)
+        else:
+            LOGGER.info(errMsg)
+            LOGGER.info(err)
     await mediaCleanup(hass, entry)
 
 
@@ -246,6 +265,7 @@ async def processDownload(hass, entry_id: int, startDate: int, endDate: int):
     )
 
     if not os.path.exists(coldFilePath):
+        LOGGER.debug(f"processDownload:{filePath} {coldFilePath}")
         raise Unresolvable("Failed to get file from cold storage: " + coldFilePath)
 
     if filePath not in hass.data[DOMAIN][entry_id]["downloadedStreams"]:
@@ -501,11 +521,41 @@ async def getHotFile(
 
     if not os.path.exists(hotFilePath):
         if not os.path.exists(coldFilePath):
+            LOGGER.debug(f"getHotFile:{coldFilePath} {hotFilePath}")
             raise Unresolvable("Failed to get file from cold storage: " + coldFilePath)
         await hass.async_add_executor_job(shutil.copyfile, coldFilePath, hotFilePath)
     return hotFilePath
 
-
+def tapoGetRecordings(tapo, date, start_index=0, end_index=999999999):
+        startTime = datetime.datetime.timestamp(datetime.datetime.strptime(date, '%Y%m%d'))
+        endTime = startTime+24*60*60-1
+        LOGGER.debug("tapoGetRecordings")
+        try:
+            result = tapo.executeFunction(
+                "searchVideoWithUTC",
+                {
+                    "playback": {
+                        "search_video_with_utc": {
+                            "channel": 0,
+                            "end_index": end_index,
+                            "id": tapo.getUserID(),
+                            "start_index": start_index,
+                            "end_time":int(endTime),
+                            "start_time":int(startTime),
+                        }
+                    }
+                },
+            )
+            if "playback" not in result:
+                raise Exception(f"Video playback is not supported by this camera {result}")
+            return result["playback"]["search_video_results"]
+        except Exception as err:
+            # user ID expired, get a new one
+            if "User ID is not authorized" in str(err):
+                tapo.getUserID(True)
+                return tapoGetRecordings(tapo,date, start_index, end_index)
+            
+            
 async def getWebFile(
     hass: HomeAssistant, entry_id: str, startDate: int, endDate: int, folder: str
 ):
@@ -525,6 +575,7 @@ async def getRecording(
     recordingCount: int = False,
     totalRecordingCount: int = False,
 ) -> str:
+    LOGGER.debug("getRecording")
     timeCorrection = await hass.async_add_executor_job(tapo.getTimeCorrection)
 
     coldDirPath = getColdDirPathForEntry(hass, entry_id)
@@ -533,7 +584,8 @@ async def getRecording(
     coldFilePath = getColdFile(hass, entry_id, startDate, endDate, "videos")
     if not os.path.exists(coldFilePath):
         # this NEEDS to happen otherwise camera does not send data!
-        allRecordings = await hass.async_add_executor_job(tapo.getRecordings, date)
+        LOGGER.debug("allRecordings")
+        allRecordings = await hass.async_add_executor_job(tapoGetRecordings,tapo, date)
         downloader = Downloader(
             tapo,
             startDate,
@@ -545,7 +597,7 @@ async def getRecording(
             None,
             downloadUID + ".mp4",
         )
-
+        LOGGER.debug("downloadedFile")
         hass.data[DOMAIN][entry_id]["isDownloadingStream"] = True
         downloadedFile = await downloader.downloadFile(
             processDownloadStatus(
@@ -573,7 +625,7 @@ async def getRecording(
                 "filePath": coldFilePath,
             },
         )
-
+        LOGGER.debug("processDownload")
     await processDownload(
         hass,
         entry_id,

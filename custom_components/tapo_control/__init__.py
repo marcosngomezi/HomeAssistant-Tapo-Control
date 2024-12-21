@@ -650,11 +650,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 > MEDIA_CLEANUP_PERIOD
             ):
                 await mediaCleanup(hass, entry)
-
+            LOGGER.debug(f"async_update_data:mediaSyncAvailable {hass.is_running} {hass.data[DOMAIN][entry.entry_id]["mediaSyncAvailable"]}")
             if (
                 hass.is_running
                 and hass.data[DOMAIN][entry.entry_id]["mediaSyncAvailable"]
             ):
+                LOGGER.debug("async_update_data:mediaSyncAvailable")
                 if (
                     hass.data[DOMAIN][entry.entry_id]["initialMediaScanDone"] is True
                     and hass.data[DOMAIN][entry.entry_id]["mediaSyncScheduled"] is False
@@ -673,9 +674,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 ):
                     hass.data[DOMAIN][entry.entry_id]["initialMediaScanRunning"] = True
                     try:
-                        await hass.async_add_executor_job(
-                            tapoController.getRecordingsList
-                        )
+                        LOGGER.debug("async_update_data:initialMediaScanRunning")
                         hass.async_create_background_task(
                             findMedia(hass, entry), "findMedia"
                         )
@@ -762,7 +761,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             "timezoneOffset": cameraTS - currentTS,
             "refreshEnabled": True,
         }
-
+        LOGGER.debug(f"initialMediaScanDone:async_setup_entry:false")
         if camData["childDevices"] is False or camData["childDevices"] is None:
             await hass.async_create_task(
                 hass.config_entries.async_forward_entry_setups(entry, ["camera"])
@@ -829,7 +828,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                 ],
             )
         )
-
         # Needs to execute AFTER binary_sensor creation!
         if camData["childDevices"] is None and (motionSensor or enableTimeSync):
             onvifDevice = await initOnvifEvents(hass, host, username, password)
@@ -848,6 +846,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         timeCorrection = await hass.async_add_executor_job(
             tapoController.getTimeCorrection
         )
+
+        await tapoCoordinator.async_config_entry_first_refresh()
 
         # todo move to utils
         async def mediaSync(time=None):
