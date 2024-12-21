@@ -12,7 +12,7 @@ import uuid
 
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
-from pytapo.media_stream.downloader import Downloader
+from .media_stream.downloader import Downloader
 from homeassistant.components.media_source.error import Unresolvable
 
 from haffmpeg.tools import IMAGE_JPEG, ImageFrame
@@ -41,6 +41,7 @@ from .const import (
     CONF_CUSTOM_STREAM,
     MEDIA_SYNC_COLD_STORAGE_PATH,
     MEDIA_SYNC_HOURS,
+    ENABLE_MEDIA_SYNC
 )
 
 UUID = uuid.uuid4().hex
@@ -528,6 +529,7 @@ async def getHotFile(
 def tapoGetRecordings(tapo, date, start_index=0, end_index=999999999):
         startTime = datetime.datetime.timestamp(datetime.datetime.strptime(date, '%Y%m%d'))
         endTime = startTime+24*60*60-1
+        LOGGER.debug("tapoGetRecordings")
         try:
             result = tapo.executeFunction(
                 "searchVideoWithUTC",
@@ -545,7 +547,7 @@ def tapoGetRecordings(tapo, date, start_index=0, end_index=999999999):
                 },
             )
             if "playback" not in result:
-                raise Exception("Video playback is not supported by this camera")
+                raise Exception(f"Video playback is not supported by this camera {result}")
             return result["playback"]["search_video_results"]
         except Exception as err:
             # user ID expired, get a new one
@@ -573,6 +575,7 @@ async def getRecording(
     recordingCount: int = False,
     totalRecordingCount: int = False,
 ) -> str:
+    LOGGER.debug("getRecording")
     timeCorrection = await hass.async_add_executor_job(tapo.getTimeCorrection)
 
     coldDirPath = getColdDirPathForEntry(hass, entry_id)
@@ -581,6 +584,7 @@ async def getRecording(
     coldFilePath = getColdFile(hass, entry_id, startDate, endDate, "videos")
     if not os.path.exists(coldFilePath):
         # this NEEDS to happen otherwise camera does not send data!
+        LOGGER.debug("allRecordings")
         allRecordings = await hass.async_add_executor_job(tapoGetRecordings,tapo, date)
         downloader = Downloader(
             tapo,
@@ -593,7 +597,7 @@ async def getRecording(
             None,
             downloadUID + ".mp4",
         )
-
+        LOGGER.debug("downloadedFile")
         hass.data[DOMAIN][entry_id]["isDownloadingStream"] = True
         downloadedFile = await downloader.downloadFile(
             processDownloadStatus(
@@ -621,7 +625,7 @@ async def getRecording(
                 "filePath": coldFilePath,
             },
         )
-
+        LOGGER.debug("processDownload")
     await processDownload(
         hass,
         entry_id,
