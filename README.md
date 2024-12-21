@@ -321,3 +321,5 @@ All the api requests used within the pytapo library are available and published 
 Author does not guarantee functionality of this integration and is not responsible for any damage.
 
 All product names, trademarks and registered trademarks in this repository, are property of their respective owners.
+
+- pytapo getRecordings method does not work

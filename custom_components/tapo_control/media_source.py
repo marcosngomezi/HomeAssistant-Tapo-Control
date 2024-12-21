@@ -176,7 +176,7 @@ class TapoMediaSource(MediaSource):
                     )
                 date = path[2]
                 tapoController: Tapo = self.hass.data[DOMAIN][entry]["controller"]
-                recordingsForDay = await getRecordings(self.hass, entry, date)
+                recordingsForDay = await getRecordings(self.hass,tapoController, entry, date)
                 videoNames = []
                 for searchResult in recordingsForDay:
                     for key in searchResult:
